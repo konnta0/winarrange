@@ -1,6 +1,6 @@
 use std::{ffi::c_void, mem, path::Path};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 use super::WindowManager;
 use crate::model::{Monitor, Rect, Window, WindowKey};
@@ -193,6 +193,36 @@ impl WindowManager for WindowsWindowManager {
                 "SetWindowPos failed with OS error {}",
                 std::io::Error::last_os_error()
             );
+        }
+
+        // A window may enforce a minimum size larger than its grid cell. Read
+        // back the accepted size and keep it within its original monitor.
+        let actual = window_rect(handle).context("window disappeared after SetWindowPos")?;
+        let work_area = self
+            .monitors()?
+            .into_iter()
+            .find(|monitor| monitor.id == window.monitor_id)
+            .context("window monitor is no longer available")?
+            .work_area;
+        let (x, y) = work_area.clamp_position(bounds.x, bounds.y, actual.width, actual.height);
+        if x != actual.x || y != actual.y {
+            let ok = unsafe {
+                SetWindowPos(
+                    handle,
+                    std::ptr::null_mut(),
+                    x,
+                    y,
+                    actual.width,
+                    actual.height,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+            };
+            if ok == 0 {
+                bail!(
+                    "SetWindowPos failed while clamping with OS error {}",
+                    std::io::Error::last_os_error()
+                );
+            }
         }
         Ok(())
     }

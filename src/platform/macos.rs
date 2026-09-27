@@ -362,13 +362,37 @@ impl WindowManager for MacOsWindowManager {
     fn set_bounds(&self, window: &Window, bounds: Rect) -> Result<()> {
         self.ensure_accessibility()?;
         let element = self.find_ax_window(window)?;
-        let position = CGPoint {
-            x: bounds.x as f64,
-            y: bounds.y as f64,
-        };
         let size = CGSize {
             width: bounds.width as f64,
             height: bounds.height as f64,
+        };
+        let size_value =
+            unsafe { AXValueCreate(K_AX_VALUE_CGSIZE_TYPE, &size as *const _ as *const c_void) };
+        if size_value.is_null() {
+            bail!("failed to create Accessibility geometry values");
+        }
+        let _size = CfGuard(size_value);
+        let size_attribute = cf_string_create(c"AXSize")?;
+        let size_error =
+            unsafe { AXUIElementSetAttributeValue(element.0, size_attribute.0, size_value) };
+        if size_error != 0 {
+            bail!("Accessibility API rejected window size (error {size_error})");
+        }
+
+        // Applications may enforce a minimum size. Read the accepted size and
+        // clamp the subsequent position so a large window cannot be placed
+        // beyond the right or bottom edge of its monitor.
+        let actual = ax_bounds(element.0).unwrap_or(bounds);
+        let work_area = self
+            .monitors()?
+            .into_iter()
+            .find(|monitor| monitor.id == window.monitor_id)
+            .context("window monitor is no longer available")?
+            .work_area;
+        let (x, y) = work_area.clamp_position(bounds.x, bounds.y, actual.width, actual.height);
+        let position = CGPoint {
+            x: x as f64,
+            y: y as f64,
         };
         let position_value = unsafe {
             AXValueCreate(
@@ -376,22 +400,16 @@ impl WindowManager for MacOsWindowManager {
                 &position as *const _ as *const c_void,
             )
         };
-        let size_value =
-            unsafe { AXValueCreate(K_AX_VALUE_CGSIZE_TYPE, &size as *const _ as *const c_void) };
-        if position_value.is_null() || size_value.is_null() {
-            bail!("failed to create Accessibility geometry values");
+        if position_value.is_null() {
+            bail!("failed to create an Accessibility position value");
         }
         let _position = CfGuard(position_value);
-        let _size = CfGuard(size_value);
         let position_attribute = cf_string_create(c"AXPosition")?;
-        let size_attribute = cf_string_create(c"AXSize")?;
         let position_error = unsafe {
             AXUIElementSetAttributeValue(element.0, position_attribute.0, position_value)
         };
-        let size_error =
-            unsafe { AXUIElementSetAttributeValue(element.0, size_attribute.0, size_value) };
-        if position_error != 0 || size_error != 0 {
-            bail!("Accessibility API rejected window bounds (position error {position_error}, size error {size_error})");
+        if position_error != 0 {
+            bail!("Accessibility API rejected window position (error {position_error})");
         }
         Ok(())
     }

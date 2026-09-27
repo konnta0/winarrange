@@ -1,12 +1,58 @@
-use std::{fs, path::PathBuf};
+use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
+    pub default_profile: Option<String>,
+    #[serde(default)]
+    pub layout: Option<LayoutKind>,
+    #[serde(default)]
+    pub sort: Option<SortOrder>,
+    #[serde(default)]
+    pub columns: Option<usize>,
+    #[serde(default)]
+    pub gap: Option<i32>,
+    #[serde(default)]
+    pub margin: Option<i32>,
+    #[serde(default)]
     pub ignore: Vec<IgnoreRule>,
+    #[serde(default, rename = "profile")]
+    pub profiles: BTreeMap<String, Profile>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Profile {
+    #[serde(default)]
+    pub process: String,
+    #[serde(default)]
+    pub layout: Option<LayoutKind>,
+    #[serde(default)]
+    pub sort: Option<SortOrder>,
+    #[serde(default)]
+    pub columns: Option<usize>,
+    #[serde(default)]
+    pub gap: Option<i32>,
+    #[serde(default)]
+    pub margin: Option<i32>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LayoutKind {
+    #[default]
+    Grid,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SortOrder {
+    #[default]
+    Title,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,16 +64,33 @@ pub enum IgnoreRule {
 impl Config {
     pub fn load() -> Result<Self> {
         let path = config_path()?;
+        match fs::read_to_string(&path) {
+            Ok(contents) => toml::from_str(&contents)
+                .with_context(|| format!("Failed to load config:\n{}", path.display())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self::load_legacy_json(),
+            Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
+        }
+    }
+
+    fn load_legacy_json() -> Result<Self> {
+        let path = legacy_config_path()?;
         match fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes)
-                .with_context(|| format!("failed to parse {}", path.display())),
+                .with_context(|| format!("Failed to load legacy config:\n{}", path.display())),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
         }
     }
 
     pub fn save(&self) -> Result<()> {
-        write_json(config_path()?, self)
+        let path = config_path()?;
+        let parent = path.parent().context("invalid config path")?;
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+        let contents = toml::to_string_pretty(self)?;
+        fs::write(&path, contents)
+            .with_context(|| format!("failed to write {}", path.display()))?;
+        Ok(())
     }
 
     pub fn ignores_process(&self, process: &str) -> bool {
@@ -37,7 +100,9 @@ impl Config {
     }
 
     pub fn add_process(&mut self, process: String) -> bool {
-        if self.ignore.iter().any(|rule| matches!(rule, IgnoreRule::Process { value } if value.eq_ignore_ascii_case(&process))) {
+        if self.ignore.iter().any(
+            |rule| matches!(rule, IgnoreRule::Process { value } if value.eq_ignore_ascii_case(&process)),
+        ) {
             false
         } else {
             self.ignore.push(IgnoreRule::Process { value: process });
@@ -47,7 +112,9 @@ impl Config {
 
     pub fn remove_process(&mut self, process: &str) -> bool {
         let before = self.ignore.len();
-        self.ignore.retain(|rule| !matches!(rule, IgnoreRule::Process { value } if value.eq_ignore_ascii_case(process)));
+        self.ignore.retain(
+            |rule| !matches!(rule, IgnoreRule::Process { value } if value.eq_ignore_ascii_case(process)),
+        );
         before != self.ignore.len()
     }
 }
@@ -73,7 +140,24 @@ pub(crate) fn data_root() -> Result<PathBuf> {
     root.context("could not determine the user configuration directory")
 }
 
-fn config_path() -> Result<PathBuf> {
+pub fn config_path() -> Result<PathBuf> {
+    Ok(data_root()?.join("config.toml"))
+}
+
+pub fn active_config_path() -> Result<PathBuf> {
+    let path = config_path()?;
+    if path.exists() {
+        return Ok(path);
+    }
+    let legacy = legacy_config_path()?;
+    if legacy.exists() {
+        Ok(legacy)
+    } else {
+        Ok(path)
+    }
+}
+
+fn legacy_config_path() -> Result<PathBuf> {
     Ok(data_root()?.join("config.json"))
 }
 
@@ -96,5 +180,76 @@ mod tests {
         assert!(!config.add_process("calculator".into()));
         assert!(config.ignores_process("CALCULATOR"));
         assert!(config.remove_process("calculator"));
+    }
+
+    #[test]
+    fn parses_v02_profiles() {
+        let config: Config = toml::from_str(
+            r#"
+gap = 8
+margin = 4
+
+[profile.unity]
+process = "Unity"
+layout = "grid"
+sort = "title"
+columns = 3
+gap = 12
+"#,
+        )
+        .unwrap();
+        let profile = &config.profiles["unity"];
+        assert_eq!(config.gap, Some(8));
+        assert_eq!(profile.columns, Some(3));
+        assert_eq!(profile.gap, Some(12));
+        assert_eq!(profile.layout, Some(LayoutKind::Grid));
+    }
+
+    #[test]
+    fn config_round_trips_through_toml() {
+        let mut config = Config {
+            default_profile: Some("unity".into()),
+            gap: Some(8),
+            ..Config::default()
+        };
+        config.profiles.insert(
+            "unity".into(),
+            Profile {
+                process: "Unity".into(),
+                layout: Some(LayoutKind::Grid),
+                sort: Some(SortOrder::Title),
+                ..Profile::default()
+            },
+        );
+        config.add_process("Calculator".into());
+
+        let encoded = toml::to_string_pretty(&config).unwrap();
+        let decoded: Config = toml::from_str(&encoded).unwrap();
+        assert_eq!(decoded.default_profile.as_deref(), Some("unity"));
+        assert_eq!(decoded.profiles["unity"].process, "Unity");
+        assert!(decoded.ignores_process("calculator"));
+    }
+
+    #[test]
+    fn invalid_layout_reports_a_toml_location() {
+        let error = toml::from_str::<Config>(
+            r#"
+[profile.bad]
+process = "Unity"
+layout = "bsp"
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("layout"));
+        assert!(error.contains("bsp"));
+        assert!(error.contains("line"));
+    }
+
+    #[test]
+    fn example_config_stays_valid() {
+        let config: Config = toml::from_str(include_str!("../../config.example.toml")).unwrap();
+        assert!(config.profiles.contains_key("unity"));
+        assert!(config.profiles.contains_key("browser"));
     }
 }

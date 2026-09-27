@@ -1,0 +1,19 @@
+gap = 8
+margin = 4
+# default_profile = "unity"
+
+[profile.unity]
+process = "Unity"
+layout = "grid"
+sort = "title"
+columns = 2
+gap = 12
+
+[profile.browser]
+process = "Google Chrome"
+layout = "grid"
+sort = "title"
+
+[[ignore]]
+type = "process"
+value = "Calculator"
