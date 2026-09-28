@@ -67,9 +67,7 @@ extern "C" {
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
     fn AXIsProcessTrusted() -> bool;
-    fn AXUIElementCreateSystemWide() -> AXUIElementRef;
     fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
-    fn AXUIElementGetPid(element: AXUIElementRef, pid: *mut i32) -> AXError;
     fn AXUIElementCopyAttributeValue(
         element: AXUIElementRef,
         attribute: CFStringRef,
@@ -110,6 +108,8 @@ extern "C" {
     fn msg_send_index(receiver: *mut c_void, selector: *mut c_void, index: usize) -> *mut c_void;
     #[link_name = "objc_msgSend"]
     fn msg_send_usize(receiver: *mut c_void, selector: *mut c_void) -> usize;
+    #[link_name = "objc_msgSend"]
+    fn msg_send_i32(receiver: *mut c_void, selector: *mut c_void) -> i32;
     #[link_name = "objc_msgSend"]
     fn msg_send_rect(receiver: *mut c_void, selector: *mut c_void) -> NSRect;
     fn objc_autoreleasePoolPush() -> *mut c_void;
@@ -291,38 +291,43 @@ impl WindowManager for MacOsWindowManager {
 
     fn focused_window(&self) -> Result<Option<Window>> {
         self.ensure_accessibility()?;
-        let system = unsafe { AXUIElementCreateSystemWide() };
-        if system.is_null() {
-            bail!("Accessibility API is unavailable");
-        }
-        let _system = CfGuard(system);
-        let Some(application) = ax_copy(system, c"AXFocusedApplication") else {
+        let Some(pid) = frontmost_application_pid() else {
             return Ok(None);
         };
+        let application = unsafe { AXUIElementCreateApplication(pid as i32) };
+        if application.is_null() {
+            return Ok(None);
+        }
         let _application = CfGuard(application);
-        let Some(focused) = ax_copy(application, c"AXFocusedWindow") else {
-            return Ok(None);
-        };
-        let _focused = CfGuard(focused);
-        if !is_standard_ax_window(focused) {
-            return Ok(None);
-        }
-        let mut pid = 0;
-        if unsafe { AXUIElementGetPid(focused, &mut pid) } != 0 {
-            return Ok(None);
-        }
-        let title = ax_string(focused, c"AXTitle").unwrap_or_default();
-        let bounds = ax_bounds(focused).unwrap_or_default();
-        let candidate = self
+        let focused = ax_copy(application, c"AXFocusedWindow")
+            .or_else(|| ax_copy(application, c"AXMainWindow"));
+        let _focused = focused.map(CfGuard);
+        let focused_details = focused
+            .filter(|&element| is_standard_ax_window(element))
+            .map(|element| {
+                (
+                    ax_string(element, c"AXTitle").unwrap_or_default(),
+                    ax_bounds(element).unwrap_or_default(),
+                )
+            });
+
+        let candidates: Vec<_> = self
             .cg_windows()?
             .into_iter()
-            .filter(|window| window.pid == pid as u32)
-            .min_by_key(|window| {
+            .filter(|window| window.pid == pid)
+            .collect();
+        let candidate = if let Some((title, bounds)) = focused_details {
+            candidates.into_iter().min_by_key(|window| {
                 let title_penalty = if window.title == title { 0 } else { 1_000_000 };
                 title_penalty
                     + (window.bounds.x - bounds.x).abs()
                     + (window.bounds.y - bounds.y).abs()
-            });
+            })
+        } else {
+            // CoreGraphics returns windows front-to-back, so the first normal
+            // window is the best fallback when an app omits AXFocusedWindow.
+            candidates.into_iter().next()
+        };
         Ok(candidate.map(CgWindow::into_window))
     }
 
@@ -583,4 +588,27 @@ fn monitor_for(bounds: Rect, monitors: &[Monitor]) -> Option<String> {
         .iter()
         .max_by_key(|monitor| bounds.intersection_area(monitor.work_area))
         .map(|monitor| monitor.id.clone())
+}
+
+fn frontmost_application_pid() -> Option<u32> {
+    unsafe {
+        let pool = objc_autoreleasePoolPush();
+        let class = objc_getClass(c"NSWorkspace".as_ptr());
+        if class.is_null() {
+            objc_autoreleasePoolPop(pool);
+            return None;
+        }
+        let workspace = msg_send_id(class, sel_registerName(c"sharedWorkspace".as_ptr()));
+        let application = msg_send_id(
+            workspace,
+            sel_registerName(c"frontmostApplication".as_ptr()),
+        );
+        let pid = if application.is_null() {
+            0
+        } else {
+            msg_send_i32(application, sel_registerName(c"processIdentifier".as_ptr()))
+        };
+        objc_autoreleasePoolPop(pool);
+        (pid > 0).then_some(pid as u32)
+    }
 }
