@@ -17,7 +17,7 @@ jobs:
     name: Validate release tag
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Verify semantic version and Cargo package version
         shell: bash
@@ -40,7 +40,7 @@ jobs:
     needs: validate
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
@@ -54,7 +54,7 @@ jobs:
           mkdir -p dist package
           cp target/aarch64-apple-darwin/release/winarrange package/winarrange
           tar -C package -czf "dist/winarrange-v${version}-macos-arm64.tar.gz" winarrange
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: winarrange-macos-arm64
           path: dist/*.tar.gz
@@ -67,7 +67,7 @@ jobs:
     env:
       RUSTFLAGS: -C target-feature=+crt-static
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
@@ -81,7 +81,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist, package | Out-Null
           Copy-Item target/x86_64-pc-windows-msvc/release/winarrange.exe package/winarrange.exe
           Compress-Archive -Path package/winarrange.exe -DestinationPath "dist/winarrange-v${version}-windows-x64.zip"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: winarrange-windows-x64
           path: dist/*.zip
@@ -94,7 +94,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: winarrange-*
           path: dist
