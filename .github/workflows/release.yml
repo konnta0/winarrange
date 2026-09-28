@@ -1,0 +1,120 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify semantic version and Cargo package version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must match vMAJOR.MINOR.PATCH; got '$tag'." >&2
+            exit 1
+          fi
+
+          package_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "winarrange") | .version')"
+          if [[ "v${package_version}" != "$tag" ]]; then
+            echo "Tag '$tag' does not match Cargo package version '${package_version}'." >&2
+            exit 1
+          fi
+
+  build-macos:
+    name: Build macOS arm64
+    needs: validate
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - name: Build release binary
+        run: cargo build --release --locked --target aarch64-apple-darwin
+      - name: Package artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist package
+          cp target/aarch64-apple-darwin/release/winarrange package/winarrange
+          tar -C package -czf "dist/winarrange-v${version}-macos-arm64.tar.gz" winarrange
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winarrange-macos-arm64
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  build-windows:
+    name: Build Windows x64
+    needs: validate
+    runs-on: windows-2022
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Build release binary
+        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+      - name: Package artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          New-Item -ItemType Directory -Force -Path dist, package | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/winarrange.exe package/winarrange.exe
+          Compress-Archive -Path package/winarrange.exe -DestinationPath "dist/winarrange-v${version}-windows-x64.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winarrange-windows-x64
+          path: dist/*.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: winarrange-*
+          path: dist
+          merge-multiple: true
+      - name: Generate SHA-256 checksums
+        working-directory: dist
+        shell: bash
+        run: sha256sum winarrange-*.tar.gz winarrange-*.zip > checksums.txt
+      - name: Create draft with all assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" \
+            dist/winarrange-*.tar.gz \
+            dist/winarrange-*.zip \
+            dist/checksums.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "winarrange $GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag \
+            --draft
+      - name: Publish completed release
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
