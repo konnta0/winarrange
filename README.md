@@ -39,7 +39,7 @@ winarrange --focused-process --dry-run
 - macOS on Apple Silicon (arm64)
 - Windows x64
 
-Linux and Intel Mac are not supported in v0.3.
+Linux and Intel Mac are not supported in v0.4.
 
 ## Install from GitHub Releases
 
@@ -52,10 +52,10 @@ running the downloaded executable:
 
 ```console
 # macOS
-shasum -a 256 winarrange-v0.3.0-macos-arm64.tar.gz
+shasum -a 256 winarrange-v0.4.0-macos-arm64.tar.gz
 
 # Windows PowerShell
-Get-FileHash .\winarrange-v0.3.0-windows-x64.zip -Algorithm SHA256
+Get-FileHash .\winarrange-v0.4.0-windows-x64.zip -Algorithm SHA256
 ```
 
 Compare the result with the corresponding entry in `checksums.txt`.
@@ -65,7 +65,7 @@ Compare the result with the corresponding entry in `checksums.txt`.
 Extract the archive and place the executable in a directory on `PATH`:
 
 ```console
-tar -xzf winarrange-v0.3.0-macos-arm64.tar.gz
+tar -xzf winarrange-v0.4.0-macos-arm64.tar.gz
 mkdir -p "$HOME/.local/bin"
 install -m 755 winarrange "$HOME/.local/bin/winarrange"
 ```
@@ -77,7 +77,7 @@ winarrange --version
 winarrange --help
 ```
 
-The v0.3 binary is not signed or notarized. On first launch, macOS may block it
+The v0.4 binary is not signed or notarized. On first launch, macOS may block it
 because the developer cannot be verified. After verifying the checksum and
 trying to run it once, follow Apple's
 [Open Anyway instructions](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unidentified-developer-mh40616/mac)
@@ -106,7 +106,7 @@ winarrange --help
 ```
 
 The executable is built natively for Windows x64 with a statically linked C
-runtime and does not require a Rust installation. The v0.3 binary is unsigned,
+runtime and does not require a Rust installation. The v0.4 binary is unsigned,
 so Microsoft Defender SmartScreen may ask you to confirm the first run. Verify
 the checksum before proceeding.
 
