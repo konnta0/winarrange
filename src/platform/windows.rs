@@ -1,4 +1,4 @@
-use std::{ffi::c_void, mem, path::Path};
+use std::{ffi::c_void, mem, path::Path, thread, time::Duration};
 
 use anyhow::{bail, Context, Result};
 
@@ -49,6 +49,9 @@ extern "system" {
     fn GetWindowRect(window: Hwnd, rect: *mut WinRect) -> Bool;
     fn GetWindowThreadProcessId(window: Hwnd, process_id: *mut Dword) -> Dword;
     fn GetForegroundWindow() -> Hwnd;
+    fn SetForegroundWindow(window: Hwnd) -> Bool;
+    fn BringWindowToTop(window: Hwnd) -> Bool;
+    fn ShowWindowAsync(window: Hwnd, command: i32) -> Bool;
     fn MonitorFromWindow(window: Hwnd, flags: Dword) -> Hmonitor;
     fn GetMonitorInfoW(monitor: Hmonitor, info: *mut MonitorInfo) -> Bool;
     fn SetWindowPos(
@@ -92,6 +95,7 @@ const MONITOR_DEFAULTTONEAREST: Dword = 2;
 const PROCESS_QUERY_LIMITED_INFORMATION: Dword = 0x1000;
 const SWP_NOZORDER: u32 = 0x0004;
 const SWP_NOACTIVATE: u32 = 0x0010;
+const SW_RESTORE: i32 = 9;
 
 pub struct WindowsWindowManager;
 
@@ -150,6 +154,22 @@ impl WindowManager for WindowsWindowManager {
         Ok((!handle.is_null()).then(|| self.window(handle)).flatten())
     }
 
+    fn focus_window(&self, window: &Window) -> Result<()> {
+        let handle = window_handle(window)?;
+        unsafe {
+            ShowWindowAsync(handle, SW_RESTORE);
+            BringWindowToTop(handle);
+            SetForegroundWindow(handle);
+        }
+        for _ in 0..10 {
+            if unsafe { GetForegroundWindow() } == handle {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        bail!("Windows did not allow the window to become the active foreground window")
+    }
+
     fn monitors(&self) -> Result<Vec<Monitor>> {
         let mut monitors = Vec::new();
         let ok = unsafe {
@@ -167,16 +187,7 @@ impl WindowManager for WindowsWindowManager {
     }
 
     fn set_bounds(&self, window: &Window, bounds: Rect) -> Result<()> {
-        let raw = usize::from_str_radix(&window.key.id, 16)
-            .map_err(|_| anyhow::anyhow!("invalid Win32 window identifier"))?;
-        let handle = raw as Hwnd;
-        let mut pid = 0;
-        if unsafe { IsWindow(handle) } == 0
-            || unsafe { GetWindowThreadProcessId(handle, &mut pid) } == 0
-            || pid != window.key.pid
-        {
-            bail!("window is no longer available");
-        }
+        let handle = window_handle(window)?;
         let ok = unsafe {
             SetWindowPos(
                 handle,
@@ -226,6 +237,20 @@ impl WindowManager for WindowsWindowManager {
         }
         Ok(())
     }
+}
+
+fn window_handle(window: &Window) -> Result<Hwnd> {
+    let raw = usize::from_str_radix(&window.key.id, 16)
+        .map_err(|_| anyhow::anyhow!("invalid Win32 window identifier"))?;
+    let handle = raw as Hwnd;
+    let mut pid = 0;
+    if unsafe { IsWindow(handle) } == 0
+        || unsafe { GetWindowThreadProcessId(handle, &mut pid) } == 0
+        || pid != window.key.pid
+    {
+        bail!("window is no longer available");
+    }
+    Ok(handle)
 }
 
 unsafe extern "system" fn collect_window(window: Hwnd, data: Lparam) -> Bool {

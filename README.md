@@ -21,6 +21,9 @@ winarrange
 # Arrange only windows belonging to the currently focused application
 winarrange --focused-process
 
+# Focus one window for an exact process instance
+winarrange focus --pid 12345
+
 # Temporarily exclude the focused window from future arrangements
 winarrange toggle-float
 ```
@@ -86,6 +89,11 @@ the installed `winarrange` executable (or the terminal/hotkey application that
 launches it), then rerun the command. Without permission, winarrange exits with
 a clear error and does not move windows.
 
+PID-based `focus` uses macOS System Events as the final application-activation
+step. macOS may also ask the launching application for permission to automate
+System Events the first time this command is used. If denied, winarrange reports
+the activation error instead of claiming that the application became active.
+
 ### Windows
 
 Extract `winarrange.exe` from the ZIP into a directory of your choice and add
@@ -134,6 +142,26 @@ Every arrange mode supports a non-mutating preview:
 ```console
 winarrange --focused-process --dry-run
 winarrange profile unity --dry-run
+```
+
+## Focus and activate one process instance
+
+Use an exact PID when several application instances have the same process name,
+bundle identifier, and window title:
+
+```console
+winarrange list --json
+winarrange focus --pid 12345
+```
+
+`focus` selects one visible window belonging to that PID. If the PID has more
+than one visible window, the frontmost one is selected. On macOS, winarrange
+both raises the window and makes that exact process instance the active
+application. On Windows, it makes the selected window the active foreground
+window. Preview the selection without changing focus with:
+
+```console
+winarrange focus --pid 12345 --dry-run
 ```
 
 ## Floating windows
@@ -217,7 +245,12 @@ List windows detected on the current Space / Virtual Desktop:
 ```console
 winarrange list
 winarrange list --verbose
+winarrange list --json
 ```
+
+The text output includes each PID; `--verbose` also includes the native window
+ID. `--json` provides `pid`, `window_id`, process, title, monitor, state, and
+bounds for scripts that need to resolve a specific process instance.
 
 Show the configuration path, profiles, floating windows, and ignore rules:
 

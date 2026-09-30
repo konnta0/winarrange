@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{bail, Context, Result};
+use serde::Serialize;
 
 use crate::{
     cli::{Cli, Command, IgnoreCommand},
@@ -60,8 +61,9 @@ pub fn run(cli: Cli, manager: &dyn WindowManager) -> Result<()> {
         Some(Command::Float) => change_float(manager, FloatAction::Add, cli.dry_run),
         Some(Command::Unfloat) => change_float(manager, FloatAction::Remove, cli.dry_run),
         Some(Command::ToggleFloat) => change_float(manager, FloatAction::Toggle, cli.dry_run),
+        Some(Command::Focus { pid }) => focus_window(manager, pid, cli.dry_run),
         Some(Command::Ignore { command }) => change_ignore(command, cli.dry_run),
-        Some(Command::List { verbose }) => list_windows(manager, verbose),
+        Some(Command::List { verbose, json }) => list_windows(manager, verbose, json),
         Some(Command::Status) => show_status(manager),
     }
 }
@@ -351,34 +353,106 @@ fn change_ignore(command: IgnoreCommand, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
-fn list_windows(manager: &dyn WindowManager, verbose: bool) -> Result<()> {
+fn focus_window(manager: &dyn WindowManager, pid: u32, dry_run: bool) -> Result<()> {
+    let window = manager
+        .visible_windows()?
+        .into_iter()
+        .find(|window| window.key.pid == pid)
+        .with_context(|| format!("No visible window found for pid {pid}."))?;
+
+    if dry_run {
+        println!(
+            "Would focus {} - {} (pid {}, window {})",
+            window.process, window.title, window.key.pid, window.key.id
+        );
+    } else {
+        manager.focus_window(&window).with_context(|| {
+            format!(
+                "failed to focus {} - {} (pid {}, window {})",
+                window.process, window.title, window.key.pid, window.key.id
+            )
+        })?;
+        println!(
+            "Focused {} - {} (pid {}, window {})",
+            window.process, window.title, window.key.pid, window.key.id
+        );
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct WindowListEntry<'a> {
+    pid: u32,
+    window_id: &'a str,
+    process: &'a str,
+    title: &'a str,
+    monitor: &'a str,
+    state: &'static str,
+    bounds: Rect,
+}
+
+fn window_list_entries<'a>(
+    windows: &'a [Window],
+    config: &Config,
+    state: &State,
+) -> Vec<WindowListEntry<'a>> {
+    windows
+        .iter()
+        .map(|window| WindowListEntry {
+            pid: window.key.pid,
+            window_id: &window.key.id,
+            process: &window.process,
+            title: &window.title,
+            monitor: &window.monitor_id,
+            state: window_state(window, config, state),
+            bounds: window.bounds,
+        })
+        .collect()
+}
+
+fn window_state(window: &Window, config: &Config, state: &State) -> &'static str {
+    if config.ignores_process(&window.process) {
+        "ignored"
+    } else if state.contains(&window.key) {
+        "floating"
+    } else {
+        "managed"
+    }
+}
+
+fn list_windows(manager: &dyn WindowManager, verbose: bool, json: bool) -> Result<()> {
     let config = Config::load()?;
     let state = State::load()?;
     let mut windows = manager.visible_windows()?;
     sort_windows(&mut windows, SortOrder::Title);
 
+    if json {
+        let entries = window_list_entries(&windows, &config, &state);
+        println!("{}", serde_json::to_string_pretty(&entries)?);
+        return Ok(());
+    }
+
     if verbose {
-        println!("PROCESS\tTITLE\tMONITOR\tSTATE\tWINDOW ID");
+        println!("PROCESS\tPID\tTITLE\tMONITOR\tSTATE\tWINDOW ID");
     } else {
-        println!("PROCESS\tTITLE\tMONITOR\tSTATE");
+        println!("PROCESS\tPID\tTITLE\tMONITOR\tSTATE");
     }
     for window in windows {
-        let status = if config.ignores_process(&window.process) {
-            "ignored"
-        } else if state.contains(&window.key) {
-            "floating"
-        } else {
-            "managed"
-        };
+        let status = window_state(&window, &config, &state);
         if verbose {
             println!(
-                "{}\t{}\t{}\t{}\t{}",
-                window.process, window.title, window.monitor_id, status, window.key.id
+                "{}\t{}\t{}\t{}\t{}\t{}",
+                window.process,
+                window.key.pid,
+                window.title,
+                window.monitor_id,
+                status,
+                window.key.id
             );
         } else {
             println!(
-                "{}\t{}\t{}\t{}",
-                window.process, window.title, window.monitor_id, status
+                "{}\t{}\t{}\t{}\t{}",
+                window.process, window.key.pid, window.title, window.monitor_id, status
             );
         }
     }
@@ -441,8 +515,38 @@ fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
     use super::*;
     use crate::model::WindowKey;
+
+    struct TestWindowManager {
+        windows: Vec<Window>,
+        focused: RefCell<Vec<WindowKey>>,
+    }
+
+    impl WindowManager for TestWindowManager {
+        fn visible_windows(&self) -> Result<Vec<Window>> {
+            Ok(self.windows.clone())
+        }
+
+        fn focused_window(&self) -> Result<Option<Window>> {
+            Ok(None)
+        }
+
+        fn focus_window(&self, window: &Window) -> Result<()> {
+            self.focused.borrow_mut().push(window.key.clone());
+            Ok(())
+        }
+
+        fn monitors(&self) -> Result<Vec<Monitor>> {
+            Ok(Vec::new())
+        }
+
+        fn set_bounds(&self, _: &Window, _: Rect) -> Result<()> {
+            Ok(())
+        }
+    }
 
     fn window(process: &str, title: &str, pid: u32, monitor: &str) -> Window {
         Window {
@@ -486,6 +590,40 @@ mod tests {
             &State::default(),
         )
         .is_empty());
+    }
+
+    #[test]
+    fn focus_uses_pid_and_dry_run_does_not_change_focus() {
+        let manager = TestWindowManager {
+            windows: vec![
+                window("Unity", "Editor", 10, "1"),
+                window("Unity", "Editor", 20, "1"),
+            ],
+            focused: RefCell::new(Vec::new()),
+        };
+
+        focus_window(&manager, 20, true).unwrap();
+        assert!(manager.focused.borrow().is_empty());
+
+        focus_window(&manager, 20, false).unwrap();
+        assert_eq!(
+            manager.focused.borrow().as_slice(),
+            [WindowKey {
+                pid: 20,
+                id: "20".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn json_window_list_contains_pid_and_window_id() {
+        let windows = vec![window("Unity", "Editor", 42, "1")];
+        let entries = window_list_entries(&windows, &Config::default(), &State::default());
+        let value = serde_json::to_value(entries).unwrap();
+
+        assert_eq!(value[0]["pid"], 42);
+        assert_eq!(value[0]["window_id"], "42");
+        assert_eq!(value[0]["state"], "managed");
     }
 
     #[test]

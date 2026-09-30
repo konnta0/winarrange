@@ -11,6 +11,9 @@ impl WindowManager for UnsupportedWindowManager {
     fn focused_window(&self) -> Result<Option<Window>> {
         bail!("winarrange supports only macOS and Windows")
     }
+    fn focus_window(&self, _: &Window) -> Result<()> {
+        bail!("winarrange supports only macOS and Windows")
+    }
     fn monitors(&self) -> Result<Vec<Monitor>> {
         bail!("winarrange supports only macOS and Windows")
     }

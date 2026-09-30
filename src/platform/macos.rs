@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     ffi::{c_char, c_int, c_long, c_void, CStr},
+    process::Command,
     ptr,
 };
 
@@ -78,6 +79,7 @@ extern "C" {
         attribute: CFStringRef,
         value: CFTypeRef,
     ) -> AXError;
+    fn AXUIElementPerformAction(element: AXUIElementRef, action: CFStringRef) -> AXError;
     fn AXValueCreate(value_type: c_int, value: *const c_void) -> AXValueRef;
     fn AXValueGetValue(value: AXValueRef, value_type: c_int, output: *mut c_void) -> bool;
 
@@ -105,6 +107,10 @@ extern "C" {
     #[link_name = "objc_msgSend"]
     fn msg_send_id(receiver: *mut c_void, selector: *mut c_void) -> *mut c_void;
     #[link_name = "objc_msgSend"]
+    fn msg_send_id_i32(receiver: *mut c_void, selector: *mut c_void, value: i32) -> *mut c_void;
+    #[link_name = "objc_msgSend"]
+    fn msg_send_bool_usize(receiver: *mut c_void, selector: *mut c_void, value: usize) -> i8;
+    #[link_name = "objc_msgSend"]
     fn msg_send_index(receiver: *mut c_void, selector: *mut c_void, index: usize) -> *mut c_void;
     #[link_name = "objc_msgSend"]
     fn msg_send_usize(receiver: *mut c_void, selector: *mut c_void) -> usize;
@@ -128,6 +134,7 @@ const K_CG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS: u32 = 16;
 const K_CG_NULL_WINDOW_ID: u32 = 0;
 const K_AX_VALUE_CGPOINT_TYPE: c_int = 1;
 const K_AX_VALUE_CGSIZE_TYPE: c_int = 2;
+const NS_APPLICATION_ACTIVATE_IGNORING_OTHER_APPS: usize = 1 << 1;
 
 pub struct MacOsWindowManager;
 
@@ -329,6 +336,29 @@ impl WindowManager for MacOsWindowManager {
             candidates.into_iter().next()
         };
         Ok(candidate.map(CgWindow::into_window))
+    }
+
+    fn focus_window(&self, window: &Window) -> Result<()> {
+        self.ensure_accessibility()?;
+        let element = self.find_ax_window(window)?;
+        let application = unsafe { AXUIElementCreateApplication(window.key.pid as i32) };
+        if application.is_null() {
+            bail!("application is no longer running");
+        }
+        let _application = CfGuard(application);
+
+        let focused_attribute = cf_string_create(c"AXFocusedWindow")?;
+        let focus_error =
+            unsafe { AXUIElementSetAttributeValue(application, focused_attribute.0, element.0) };
+        let raise_action = cf_string_create(c"AXRaise")?;
+        let raise_error = unsafe { AXUIElementPerformAction(element.0, raise_action.0) };
+        if focus_error != 0 && raise_error != 0 {
+            bail!(
+                "Accessibility API could not focus the window (focus error {focus_error}, raise error {raise_error})"
+            );
+        }
+
+        activate_application(window.key.pid)
     }
 
     fn monitors(&self) -> Result<Vec<Monitor>> {
@@ -611,4 +641,61 @@ fn frontmost_application_pid() -> Option<u32> {
         objc_autoreleasePoolPop(pool);
         (pid > 0).then_some(pid as u32)
     }
+}
+
+fn activate_application(pid: u32) -> Result<()> {
+    if frontmost_application_pid() == Some(pid) {
+        return Ok(());
+    }
+
+    let _activated = unsafe {
+        let pool = objc_autoreleasePoolPush();
+        let class = objc_getClass(c"NSRunningApplication".as_ptr());
+        if class.is_null() {
+            objc_autoreleasePoolPop(pool);
+            bail!("AppKit NSRunningApplication is unavailable");
+        }
+        let application = msg_send_id_i32(
+            class,
+            sel_registerName(c"runningApplicationWithProcessIdentifier:".as_ptr()),
+            pid as i32,
+        );
+        if application.is_null() {
+            objc_autoreleasePoolPop(pool);
+            bail!("application with pid {pid} is no longer running");
+        }
+        let activated = msg_send_bool_usize(
+            application,
+            sel_registerName(c"activateWithOptions:".as_ptr()),
+            NS_APPLICATION_ACTIVATE_IGNORING_OTHER_APPS,
+        ) != 0;
+        objc_autoreleasePoolPop(pool);
+        activated
+    };
+    // AppKit can report success without actually making the process active.
+    // Always follow it with the System Events operation known to update the
+    // process-level active state. Its result also avoids NSWorkspace's
+    // run-loop-scoped cache when verifying the new frontmost PID.
+    let script = format!(
+        "tell application \"System Events\"\nset frontmost of first application process whose unix id is {pid} to true\nreturn unix id of first application process whose frontmost is true\nend tell"
+    );
+    let output = Command::new("/usr/bin/osascript")
+        .args(["-e", &script])
+        .output()
+        .context("failed to run the macOS application activation fallback")?;
+    if !output.status.success() {
+        let message = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "macOS application activation fallback failed: {}",
+            message.trim()
+        );
+    }
+    let frontmost_pid = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<u32>()
+        .context("macOS application activation returned an invalid frontmost pid")?;
+    if frontmost_pid != pid {
+        bail!("application pid {pid} did not become active (frontmost pid is {frontmost_pid})");
+    }
+    Ok(())
 }

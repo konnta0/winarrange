@@ -44,6 +44,12 @@ pub enum Command {
     Unfloat,
     /// Toggle whether the focused window participates in arrangement.
     ToggleFloat,
+    /// Focus one visible window belonging to a process ID and activate its application.
+    Focus {
+        /// Process ID whose window should receive focus.
+        #[arg(long, value_name = "PID")]
+        pid: u32,
+    },
     /// Manage persistent application ignore rules.
     Ignore {
         #[command(subcommand)]
@@ -57,8 +63,11 @@ pub enum Command {
     /// List windows detected on the current Space / Virtual Desktop.
     List {
         /// Include the platform-specific window ID.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "json")]
         verbose: bool,
+        /// Print machine-readable JSON including PID and window ID.
+        #[arg(long, conflicts_with = "verbose")]
+        json: bool,
     },
     /// Show configuration, profiles, floating windows, and ignore rules.
     Status,
@@ -118,6 +127,8 @@ mod tests {
         assert_eq!(profile.gap, Some(16));
 
         assert!(Cli::try_parse_from(["winarrange", "list", "--verbose"]).is_ok());
+        assert!(Cli::try_parse_from(["winarrange", "list", "--json"]).is_ok());
+        assert!(Cli::try_parse_from(["winarrange", "focus", "--pid", "12345"]).is_ok());
         assert!(Cli::try_parse_from(["winarrange", "status"]).is_ok());
     }
 

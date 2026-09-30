@@ -12,6 +12,7 @@ mod windows;
 pub trait WindowManager {
     fn visible_windows(&self) -> Result<Vec<Window>>;
     fn focused_window(&self) -> Result<Option<Window>>;
+    fn focus_window(&self, window: &Window) -> Result<()>;
     fn monitors(&self) -> Result<Vec<Monitor>>;
     fn set_bounds(&self, window: &Window, bounds: Rect) -> Result<()>;
 }
