@@ -1,6 +1,10 @@
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt, fs,
+    path::PathBuf,
+};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -39,6 +43,15 @@ pub struct Profile {
     pub gap: Option<i32>,
     #[serde(default)]
     pub margin: Option<i32>,
+    #[serde(default, rename = "slot", skip_serializing_if = "Vec::is_empty")]
+    pub slots: Vec<SlotRule>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SlotRule {
+    pub title: String,
+    pub position: i64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,6 +68,22 @@ pub enum SortOrder {
     Title,
 }
 
+impl fmt::Display for LayoutKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Grid => formatter.write_str("grid"),
+        }
+    }
+}
+
+impl fmt::Display for SortOrder {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Title => formatter.write_str("title"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum IgnoreRule {
@@ -65,8 +94,14 @@ impl Config {
     pub fn load() -> Result<Self> {
         let path = config_path()?;
         match fs::read_to_string(&path) {
-            Ok(contents) => toml::from_str(&contents)
-                .with_context(|| format!("Failed to load config:\n{}", path.display())),
+            Ok(contents) => {
+                let config: Self = toml::from_str(&contents)
+                    .with_context(|| format!("Failed to load config:\n{}", path.display()))?;
+                config
+                    .validate()
+                    .with_context(|| format!("Failed to load config:\n{}", path.display()))?;
+                Ok(config)
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self::load_legacy_json(),
             Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
         }
@@ -75,14 +110,22 @@ impl Config {
     fn load_legacy_json() -> Result<Self> {
         let path = legacy_config_path()?;
         match fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .with_context(|| format!("Failed to load legacy config:\n{}", path.display())),
+            Ok(bytes) => {
+                let config: Self = serde_json::from_slice(&bytes).with_context(|| {
+                    format!("Failed to load legacy config:\n{}", path.display())
+                })?;
+                config.validate().with_context(|| {
+                    format!("Failed to load legacy config:\n{}", path.display())
+                })?;
+                Ok(config)
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
         }
     }
 
     pub fn save(&self) -> Result<()> {
+        self.validate()?;
         let path = config_path()?;
         let parent = path.parent().context("invalid config path")?;
         fs::create_dir_all(parent)
@@ -90,6 +133,56 @@ impl Config {
         let contents = toml::to_string_pretty(self)?;
         fs::write(&path, contents)
             .with_context(|| format!("failed to write {}", path.display()))?;
+        Ok(())
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.columns == Some(0) {
+            bail!("columns must be greater than zero");
+        }
+        if self.gap.is_some_and(|value| value < 0) {
+            bail!("gap must not be negative");
+        }
+        if self.margin.is_some_and(|value| value < 0) {
+            bail!("margin must not be negative");
+        }
+
+        for (name, profile) in &self.profiles {
+            if profile.columns == Some(0) {
+                bail!("Invalid profile '{name}': columns must be greater than zero.");
+            }
+            if profile.gap.is_some_and(|value| value < 0) {
+                bail!("Invalid profile '{name}': gap must not be negative.");
+            }
+            if profile.margin.is_some_and(|value| value < 0) {
+                bail!("Invalid profile '{name}': margin must not be negative.");
+            }
+
+            let mut positions = BTreeSet::new();
+            for rule in &profile.slots {
+                if rule.title.trim().is_empty() {
+                    bail!("Invalid profile '{name}': slot title must not be empty.");
+                }
+                if rule.position < 0 {
+                    bail!(
+                        "Invalid profile '{name}': slot position {} must not be negative.",
+                        rule.position
+                    );
+                }
+                if usize::try_from(rule.position).is_err() {
+                    bail!(
+                        "Invalid profile '{name}': slot position {} is too large.",
+                        rule.position
+                    );
+                }
+                if !positions.insert(rule.position) {
+                    bail!(
+                        "Invalid profile '{name}': slot {} is assigned by multiple rules.",
+                        rule.position
+                    );
+                }
+            }
+        }
         Ok(())
     }
 
@@ -206,6 +299,57 @@ gap = 12
     }
 
     #[test]
+    fn parses_and_validates_slot_rules() {
+        let config: Config = toml::from_str(
+            r#"
+[profile.unity]
+process = "Unity"
+columns = 2
+
+[[profile.unity.slot]]
+title = "Server"
+position = 0
+
+[[profile.unity.slot]]
+title = "Client-01"
+position = 1
+"#,
+        )
+        .unwrap();
+        config.validate().unwrap();
+        assert_eq!(config.profiles["unity"].slots.len(), 2);
+    }
+
+    #[test]
+    fn rejects_invalid_and_duplicate_slots() {
+        let mut config = Config::default();
+        config.profiles.insert(
+            "unity".into(),
+            Profile {
+                process: "Unity".into(),
+                slots: vec![
+                    SlotRule {
+                        title: "Server".into(),
+                        position: 0,
+                    },
+                    SlotRule {
+                        title: "Client".into(),
+                        position: 0,
+                    },
+                ],
+                ..Profile::default()
+            },
+        );
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains("Invalid profile 'unity'"));
+        assert!(error.contains("slot 0"));
+
+        config.profiles.get_mut("unity").unwrap().slots[1].position = -1;
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains("must not be negative"));
+    }
+
+    #[test]
     fn config_round_trips_through_toml() {
         let mut config = Config {
             default_profile: Some("unity".into()),
@@ -249,6 +393,7 @@ layout = "bsp"
     #[test]
     fn example_config_stays_valid() {
         let config: Config = toml::from_str(include_str!("../../config.example.toml")).unwrap();
+        config.validate().unwrap();
         assert!(config.profiles.contains_key("unity"));
         assert!(config.profiles.contains_key("browser"));
     }

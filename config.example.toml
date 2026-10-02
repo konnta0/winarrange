@@ -9,6 +9,14 @@ sort = "title"
 columns = 2
 gap = 12
 
+[[profile.unity.slot]]
+title = "Server"
+position = 0
+
+[[profile.unity.slot]]
+title = "Client-01"
+position = 1
+
 [profile.browser]
 process = "Google Chrome"
 layout = "grid"

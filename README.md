@@ -24,6 +24,9 @@ winarrange --focused-process
 # Focus one window for an exact process instance
 winarrange focus --pid 12345
 
+# Move through windows of the currently focused application
+winarrange focus --next
+
 # Temporarily exclude the focused window from future arrangements
 winarrange toggle-float
 ```
@@ -39,7 +42,7 @@ winarrange --focused-process --dry-run
 - macOS on Apple Silicon (arm64)
 - Windows x64
 
-Linux and Intel Mac are not supported in v0.4.
+Linux and Intel Mac are not supported in v0.6.
 
 ## Install from GitHub Releases
 
@@ -52,10 +55,10 @@ running the downloaded executable:
 
 ```console
 # macOS
-shasum -a 256 winarrange-v0.4.0-macos-arm64.tar.gz
+shasum -a 256 winarrange-v0.6.0-macos-arm64.tar.gz
 
 # Windows PowerShell
-Get-FileHash .\winarrange-v0.4.0-windows-x64.zip -Algorithm SHA256
+Get-FileHash .\winarrange-v0.6.0-windows-x64.zip -Algorithm SHA256
 ```
 
 Compare the result with the corresponding entry in `checksums.txt`.
@@ -65,7 +68,7 @@ Compare the result with the corresponding entry in `checksums.txt`.
 Extract the archive and place the executable in a directory on `PATH`:
 
 ```console
-tar -xzf winarrange-v0.4.0-macos-arm64.tar.gz
+tar -xzf winarrange-v0.6.0-macos-arm64.tar.gz
 mkdir -p "$HOME/.local/bin"
 install -m 755 winarrange "$HOME/.local/bin/winarrange"
 ```
@@ -77,7 +80,7 @@ winarrange --version
 winarrange --help
 ```
 
-The v0.4 binary is not signed or notarized. On first launch, macOS may block it
+The v0.6 binary is not signed or notarized. On first launch, macOS may block it
 because the developer cannot be verified. After verifying the checksum and
 trying to run it once, follow Apple's
 [Open Anyway instructions](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unidentified-developer-mh40616/mac)
@@ -106,7 +109,7 @@ winarrange --help
 ```
 
 The executable is built natively for Windows x64 with a statically linked C
-runtime and does not require a Rust installation. The v0.4 binary is unsigned,
+runtime and does not require a Rust installation. The v0.6 binary is unsigned,
 so Microsoft Defender SmartScreen may ask you to confirm the first run. Verify
 the checksum before proceeding.
 
@@ -144,7 +147,7 @@ winarrange --focused-process --dry-run
 winarrange profile unity --dry-run
 ```
 
-## Focus and activate one process instance
+## Focus and navigate windows
 
 Use an exact PID when several application instances have the same process name,
 bundle identifier, and window title:
@@ -155,7 +158,8 @@ winarrange focus --pid 12345
 ```
 
 `focus` selects one visible window belonging to that PID. If the PID has more
-than one visible window, the frontmost one is selected. On macOS, winarrange
+than one visible window, the first in stable title/PID/window-ID order is
+selected. On macOS, winarrange
 both raises the window and makes that exact process instance the active
 application. On Windows, it makes the selected window the active foreground
 window. Preview the selection without changing focus with:
@@ -163,6 +167,28 @@ window. Preview the selection without changing focus with:
 ```console
 winarrange focus --pid 12345 --dry-run
 ```
+
+Focus by a case-insensitive partial title match, optionally limited to a
+process. If multiple windows match, winarrange reports that fact and chooses the
+first window in the same stable order used for arrangement:
+
+```console
+winarrange focus --title Client-02
+winarrange focus --process Unity --title Client-02
+```
+
+Cycle through windows belonging to the focused application. Navigation wraps
+around and includes floating and ignored windows because those states affect
+arrangement only:
+
+```console
+winarrange focus --next
+winarrange focus --prev
+winarrange focus --next --process Unity
+```
+
+All focus modes support `--dry-run`, which prints the selected PID and native
+window ID without changing focus.
 
 ## Floating windows
 
@@ -200,6 +226,14 @@ sort = "title"
 columns = 2
 gap = 12
 
+[[profile.unity.slot]]
+title = "Server"
+position = 0
+
+[[profile.unity.slot]]
+title = "Client-01"
+position = 1
+
 [profile.browser]
 process = "Google Chrome"
 layout = "grid"
@@ -216,6 +250,24 @@ Run a profile with an unambiguous subcommand:
 winarrange profile unity
 winarrange profile unity --columns 3 --gap 16
 ```
+
+Inspect profiles and locate the configuration file from scripts:
+
+```console
+winarrange profile list
+winarrange profile show unity
+winarrange config path
+```
+
+Slot rules pin matching windows to zero-based grid cells. Title matching is
+case-insensitive and partial; rules are evaluated in file order. Unmatched
+windows fill the remaining cells in stable title/PID/window-ID order. A missing,
+ignored, or floating window does not reserve its configured slot, so the
+remaining layout is recalculated from the windows currently eligible for
+arrangement. Rules are applied independently on each monitor.
+
+Duplicate positions, negative positions, empty slot titles, and invalid grid
+values are rejected when the configuration is loaded.
 
 Effective values are selected in this order:
 
