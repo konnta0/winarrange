@@ -7,6 +7,8 @@ use std::{
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::action::{Action, HotkeySpec};
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -26,6 +28,8 @@ pub struct Config {
     pub ignore: Vec<IgnoreRule>,
     #[serde(default, rename = "profile")]
     pub profiles: BTreeMap<String, Profile>,
+    #[serde(default, rename = "hotkey", skip_serializing_if = "Vec::is_empty")]
+    pub hotkeys: Vec<HotkeyConfig>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -52,6 +56,21 @@ pub struct Profile {
 pub struct SlotRule {
     pub title: String,
     pub position: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HotkeyConfig {
+    pub keys: String,
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HotkeyBinding {
+    pub keys: HotkeySpec,
+    pub action: Action,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,7 +202,33 @@ impl Config {
                 }
             }
         }
+        self.hotkey_bindings()?;
         Ok(())
+    }
+
+    pub fn hotkey_bindings(&self) -> Result<Vec<HotkeyBinding>> {
+        let mut seen = BTreeSet::new();
+        self.hotkeys
+            .iter()
+            .map(|rule| {
+                let keys = HotkeySpec::parse(&rule.keys)
+                    .with_context(|| format!("Invalid hotkey '{}'.", rule.keys))?;
+                if !seen.insert(keys.normalized.clone()) {
+                    bail!("hotkey '{}' is configured more than once", rule.keys);
+                }
+                let action = Action::parse(&rule.action, rule.profile.as_deref())
+                    .with_context(|| format!("Invalid action for hotkey '{}'.", rule.keys))?;
+                if let Action::Profile(name) = &action {
+                    if !self.profiles.contains_key(name) {
+                        bail!(
+                            "Profile '{name}' referenced by hotkey '{}' not found.",
+                            rule.keys
+                        );
+                    }
+                }
+                Ok(HotkeyBinding { keys, action })
+            })
+            .collect()
     }
 
     pub fn ignores_process(&self, process: &str) -> bool {
@@ -347,6 +392,60 @@ position = 1
         config.profiles.get_mut("unity").unwrap().slots[1].position = -1;
         let error = config.validate().unwrap_err().to_string();
         assert!(error.contains("must not be negative"));
+    }
+
+    #[test]
+    fn validates_hotkeys_and_profile_actions() {
+        let mut config = Config::default();
+        config.profiles.insert(
+            "unity".into(),
+            Profile {
+                process: "Unity".into(),
+                ..Profile::default()
+            },
+        );
+        config.hotkeys = vec![
+            HotkeyConfig {
+                keys: "cmd+shift+a".into(),
+                action: "arrange-focused".into(),
+                profile: None,
+            },
+            HotkeyConfig {
+                keys: "cmd+shift+u".into(),
+                action: "profile".into(),
+                profile: Some("unity".into()),
+            },
+        ];
+        let bindings = config.hotkey_bindings().unwrap();
+        assert_eq!(bindings.len(), 2);
+        assert_eq!(bindings[1].action, Action::Profile("unity".into()));
+    }
+
+    #[test]
+    fn rejects_duplicate_or_invalid_hotkeys_without_changing_config() {
+        let mut config = Config {
+            hotkeys: vec![HotkeyConfig {
+                keys: "cmd++a".into(),
+                action: "arrange".into(),
+                profile: None,
+            }],
+            ..Config::default()
+        };
+        assert!(config.hotkey_bindings().is_err());
+
+        config.hotkeys = vec![
+            HotkeyConfig {
+                keys: "cmd+shift+a".into(),
+                action: "arrange".into(),
+                profile: None,
+            },
+            HotkeyConfig {
+                keys: "win+shift+a".into(),
+                action: "focus-next".into(),
+                profile: None,
+            },
+        ];
+        assert!(config.hotkey_bindings().is_err());
     }
 
     #[test]

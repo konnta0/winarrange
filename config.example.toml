@@ -25,3 +25,25 @@ sort = "title"
 [[ignore]]
 type = "process"
 value = "Calculator"
+
+# No global hotkeys are registered unless entries are explicitly configured.
+[[hotkey]]
+keys = "cmd+shift+a"
+action = "arrange-focused"
+
+[[hotkey]]
+keys = "cmd+shift+space"
+action = "toggle-float"
+
+[[hotkey]]
+keys = "cmd+shift+j"
+action = "focus-next"
+
+[[hotkey]]
+keys = "cmd+shift+k"
+action = "focus-prev"
+
+[[hotkey]]
+keys = "cmd+shift+u"
+action = "profile"
+profile = "unity"

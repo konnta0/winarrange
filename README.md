@@ -1,13 +1,15 @@
 # winarrange
 
-`winarrange` is an on-demand window arranger for macOS and Windows. It arranges
-windows only when explicitly invoked and does not run a background window
-manager.
+`winarrange` is an on-demand window arranger for macOS and Windows. It changes
+windows only when you explicitly invoke a CLI command or configured global
+hotkey. Its optional daemon connects hotkeys to actions; it does not watch or
+automatically manage windows.
 
-It is not a tiling window manager or daemon: it does not watch window events,
-replace Spaces / Virtual Desktops, or resize anything by itself.
+It is not a tiling window manager: neither the CLI nor optional hotkey daemon
+watches window events, replaces Spaces / Virtual Desktops, or resizes anything
+without an explicit action.
 
-> Nothing happens until the user runs `winarrange`.
+> Nothing happens until the user explicitly invokes a winarrange action.
 
 The primary use case is keeping several Unity Editor instances in a predictable
 grid without adopting a resident tiling window manager.
@@ -29,6 +31,9 @@ winarrange focus --next
 
 # Temporarily exclude the focused window from future arrangements
 winarrange toggle-float
+
+# Start the optional global-hotkey daemon
+winarrange daemon start
 ```
 
 Preview any arrangement without moving windows:
@@ -42,7 +47,7 @@ winarrange --focused-process --dry-run
 - macOS on Apple Silicon (arm64)
 - Windows x64
 
-Linux and Intel Mac are not supported in v0.6.
+Linux and Intel Mac are not supported in v0.7.
 
 ## Install from GitHub Releases
 
@@ -55,10 +60,10 @@ running the downloaded executable:
 
 ```console
 # macOS
-shasum -a 256 winarrange-v0.6.0-macos-arm64.tar.gz
+shasum -a 256 winarrange-v0.7.0-macos-arm64.tar.gz
 
 # Windows PowerShell
-Get-FileHash .\winarrange-v0.6.0-windows-x64.zip -Algorithm SHA256
+Get-FileHash .\winarrange-v0.7.0-windows-x64.zip -Algorithm SHA256
 ```
 
 Compare the result with the corresponding entry in `checksums.txt`.
@@ -68,7 +73,7 @@ Compare the result with the corresponding entry in `checksums.txt`.
 Extract the archive and place the executable in a directory on `PATH`:
 
 ```console
-tar -xzf winarrange-v0.6.0-macos-arm64.tar.gz
+tar -xzf winarrange-v0.7.0-macos-arm64.tar.gz
 mkdir -p "$HOME/.local/bin"
 install -m 755 winarrange "$HOME/.local/bin/winarrange"
 ```
@@ -80,7 +85,7 @@ winarrange --version
 winarrange --help
 ```
 
-The v0.6 binary is not signed or notarized. On first launch, macOS may block it
+The v0.7 binary is not signed or notarized. On first launch, macOS may block it
 because the developer cannot be verified. After verifying the checksum and
 trying to run it once, follow Apple's
 [Open Anyway instructions](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unidentified-developer-mh40616/mac)
@@ -109,7 +114,7 @@ winarrange --help
 ```
 
 The executable is built natively for Windows x64 with a statically linked C
-runtime and does not require a Rust installation. The v0.6 binary is unsigned,
+runtime and does not require a Rust installation. The v0.7 binary is unsigned,
 so Microsoft Defender SmartScreen may ask you to confirm the first run. Verify
 the checksum before proceeding.
 
@@ -242,6 +247,10 @@ sort = "title"
 [[ignore]]
 type = "process"
 value = "Calculator"
+
+[[hotkey]]
+keys = "cmd+shift+a"
+action = "arrange-focused"
 ```
 
 Run a profile with an unambiguous subcommand:
@@ -268,6 +277,77 @@ arrangement. Rules are applied independently on each monitor.
 
 Duplicate positions, negative positions, empty slot titles, and invalid grid
 values are rejected when the configuration is loaded.
+
+## Global hotkeys and daemon
+
+Global hotkeys are opt-in. Add only the bindings you want to `config.toml`:
+
+```toml
+# macOS example
+[[hotkey]]
+keys = "cmd+shift+a"
+action = "arrange-focused"
+
+[[hotkey]]
+keys = "cmd+shift+space"
+action = "toggle-float"
+
+[[hotkey]]
+keys = "cmd+shift+j"
+action = "focus-next"
+
+[[hotkey]]
+keys = "cmd+shift+k"
+action = "focus-prev"
+
+[[hotkey]]
+keys = "cmd+shift+u"
+action = "profile"
+profile = "unity"
+```
+
+On Windows use `win` in place of `cmd`, for example
+`win+shift+a`. `cmd`, `win`, `ctrl`, `alt`/`option`, and `shift` are
+case-insensitive. Hotkey actions are parsed as structured winarrange actions;
+they cannot execute shell commands or arbitrary programs.
+
+Run in the foreground while configuring or troubleshooting:
+
+```console
+winarrange daemon run
+```
+
+Manage the background process:
+
+```console
+winarrange daemon start
+winarrange daemon status
+winarrange daemon reload
+winarrange daemon restart
+winarrange daemon stop
+```
+
+`reload` validates the entire new configuration before replacing registered
+hotkeys. If parsing or registration fails, the previous bindings are restored.
+Actions execute serially on the daemon event loop, and one failed action is
+logged without terminating the daemon. The daemon listens only on a local Unix
+socket (macOS) or named pipe (Windows); it opens no network port.
+
+Install or remove login-time autostart for the current user:
+
+```console
+winarrange daemon install
+winarrange daemon uninstall
+```
+
+macOS uses `~/Library/LaunchAgents/io.github.konnta0.winarrange.plist`.
+Windows uses the current user's `Run` registry key; it is not a Windows
+Service. Uninstalling autostart does not remove the binary, configuration,
+profiles, ignore rules, or floating state.
+
+Daemon logs are written to `daemon.log` beside `config.toml`. On macOS,
+Accessibility permission applies to whichever installed winarrange binary the
+daemon runs. Hotkey registration itself does not arrange or focus any window.
 
 Effective values are selected in this order:
 
@@ -328,15 +408,6 @@ Diagnostic commands never move or resize windows.
 - Floating and ignored windows are left completely untouched.
 
 Temporary state lives alongside the config in `state.json`.
-
-## Hotkeys
-
-Global hotkeys are intentionally outside this project. A typical setup binds:
-
-```text
-Hotkey A → winarrange --focused-process
-Hotkey B → winarrange toggle-float
-```
 
 ## Development
 

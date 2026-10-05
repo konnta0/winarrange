@@ -4,6 +4,7 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
 use crate::{
+    action::Action,
     cli::{Cli, Command, ConfigCommand, FocusArgs, IgnoreCommand, ProfileCommand},
     config::{
         active_config_path, config_path, Config, IgnoreRule, LayoutKind, Profile, SlotRule,
@@ -14,6 +15,37 @@ use crate::{
     platform::WindowManager,
     state::State,
 };
+
+pub fn execute_action(action: &Action, manager: &dyn WindowManager) -> Result<()> {
+    match action {
+        Action::Arrange => {
+            arrange_request(manager, None, false, None, CliOverrides::default(), false)
+        }
+        Action::ArrangeFocusedProcess => {
+            arrange_request(manager, None, true, None, CliOverrides::default(), false)
+        }
+        Action::ToggleFloat => change_float(manager, FloatAction::Toggle, false),
+        Action::FocusNext | Action::FocusPrevious => focus_window(
+            manager,
+            FocusArgs {
+                pid: None,
+                title: None,
+                next: matches!(action, Action::FocusNext),
+                prev: matches!(action, Action::FocusPrevious),
+            },
+            None,
+            false,
+        ),
+        Action::Profile(name) => arrange_request(
+            manager,
+            None,
+            false,
+            Some(name.clone()),
+            CliOverrides::default(),
+            false,
+        ),
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Selection {
@@ -78,6 +110,9 @@ pub fn run(cli: Cli, manager: &dyn WindowManager) -> Result<()> {
         Some(Command::Ignore { command }) => change_ignore(command, cli.dry_run),
         Some(Command::List { verbose, json }) => list_windows(manager, verbose, json),
         Some(Command::Status) => show_status(manager),
+        Some(Command::Daemon { .. }) => {
+            bail!("daemon commands must be handled before app dispatch")
+        }
     }
 }
 

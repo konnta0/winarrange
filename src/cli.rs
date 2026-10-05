@@ -64,6 +64,11 @@ pub enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    /// Run and manage the global-hotkey daemon.
+    Daemon {
+        #[command(subcommand)]
+        command: Option<DaemonCommand>,
+    },
     /// List windows detected on the current Space / Virtual Desktop.
     List {
         /// Include the platform-specific window ID.
@@ -111,6 +116,30 @@ pub enum ProfileCommand {
 pub enum ConfigCommand {
     /// Print the config.toml path.
     Path,
+}
+
+#[derive(Clone, Debug, Subcommand)]
+pub enum DaemonCommand {
+    /// Start the daemon in the background.
+    Start,
+    /// Stop the running daemon.
+    Stop,
+    /// Show daemon state and registered hotkeys.
+    Status,
+    /// Stop and start the daemon.
+    Restart,
+    /// Reload and atomically replace hotkey registrations.
+    Reload,
+    /// Install login-time autostart for the current user.
+    Install,
+    /// Remove current-user autostart without deleting user data.
+    Uninstall,
+    /// Run the daemon in the foreground.
+    Run {
+        /// Suppress terminal logging when launched by start/autostart.
+        #[arg(long, hide = true)]
+        background: bool,
+    },
 }
 
 #[derive(Clone, Debug, Subcommand)]
@@ -193,6 +222,19 @@ mod tests {
             }) if name == "unity"
         ));
         assert!(Cli::try_parse_from(["winarrange", "config", "path"]).is_ok());
+        assert!(Cli::try_parse_from(["winarrange", "daemon"]).is_ok());
+        for command in [
+            "start",
+            "stop",
+            "status",
+            "restart",
+            "reload",
+            "install",
+            "uninstall",
+            "run",
+        ] {
+            assert!(Cli::try_parse_from(["winarrange", "daemon", command]).is_ok());
+        }
         assert!(Cli::try_parse_from(["winarrange", "status"]).is_ok());
     }
 
