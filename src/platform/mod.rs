@@ -14,6 +14,9 @@ pub trait WindowManager {
     fn focused_window(&self) -> Result<Option<Window>>;
     fn focus_window(&self, window: &Window) -> Result<()>;
     fn monitors(&self) -> Result<Vec<Monitor>>;
+    fn can_set_bounds(&self, _: &Window) -> Result<bool> {
+        Ok(true)
+    }
     fn set_bounds(&self, window: &Window, bounds: Rect) -> Result<()>;
 }
 

@@ -9,6 +9,9 @@ pub enum Action {
     ToggleFloat,
     FocusNext,
     FocusPrevious,
+    FocusNextAll,
+    FocusPreviousAll,
+    ToggleZoom,
     Profile(String),
 }
 
@@ -20,6 +23,9 @@ impl Action {
             "toggle-float" => no_profile(profile, Self::ToggleFloat),
             "focus-next" => no_profile(profile, Self::FocusNext),
             "focus-prev" | "focus-previous" => no_profile(profile, Self::FocusPrevious),
+            "focus-next-all" => no_profile(profile, Self::FocusNextAll),
+            "focus-prev-all" | "focus-previous-all" => no_profile(profile, Self::FocusPreviousAll),
+            "toggle-zoom" => no_profile(profile, Self::ToggleZoom),
             "profile" => {
                 let profile = profile
                     .filter(|value| !value.trim().is_empty())
@@ -39,6 +45,9 @@ impl fmt::Display for Action {
             Self::ToggleFloat => formatter.write_str("toggle-float"),
             Self::FocusNext => formatter.write_str("focus-next"),
             Self::FocusPrevious => formatter.write_str("focus-prev"),
+            Self::FocusNextAll => formatter.write_str("focus-next-all"),
+            Self::FocusPreviousAll => formatter.write_str("focus-prev-all"),
+            Self::ToggleZoom => formatter.write_str("toggle-zoom"),
             Self::Profile(profile) => write!(formatter, "profile:{profile}"),
         }
     }
@@ -213,6 +222,18 @@ mod tests {
         assert_eq!(
             Action::parse("focus-prev", None).unwrap(),
             Action::FocusPrevious
+        );
+        assert_eq!(
+            Action::parse("focus-next-all", None).unwrap(),
+            Action::FocusNextAll
+        );
+        assert_eq!(
+            Action::parse("focus-prev-all", None).unwrap(),
+            Action::FocusPreviousAll
+        );
+        assert_eq!(
+            Action::parse("toggle-zoom", None).unwrap(),
+            Action::ToggleZoom
         );
         assert_eq!(
             Action::parse("profile", Some("unity")).unwrap(),

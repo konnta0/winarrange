@@ -79,6 +79,11 @@ extern "C" {
         attribute: CFStringRef,
         value: CFTypeRef,
     ) -> AXError;
+    fn AXUIElementIsAttributeSettable(
+        element: AXUIElementRef,
+        attribute: CFStringRef,
+        settable: *mut bool,
+    ) -> AXError;
     fn AXUIElementPerformAction(element: AXUIElementRef, action: CFStringRef) -> AXError;
     fn AXValueCreate(value_type: c_int, value: *const c_void) -> AXValueRef;
     fn AXValueGetValue(value: AXValueRef, value_type: c_int, output: *mut c_void) -> bool;
@@ -394,6 +399,14 @@ impl WindowManager for MacOsWindowManager {
         }
     }
 
+    fn can_set_bounds(&self, window: &Window) -> Result<bool> {
+        let Ok(element) = self.find_ax_window(window) else {
+            return Ok(false);
+        };
+        Ok(ax_attribute_settable(element.0, c"AXPosition")
+            && ax_attribute_settable(element.0, c"AXSize"))
+    }
+
     fn set_bounds(&self, window: &Window, bounds: Rect) -> Result<()> {
         self.ensure_accessibility()?;
         let element = self.find_ax_window(window)?;
@@ -572,6 +585,13 @@ fn ax_bool(element: AXUIElementRef, attribute: &CStr) -> Option<bool> {
     let value = ax_copy(element, attribute)?;
     let _value = CfGuard(value);
     Some(unsafe { CFBooleanGetValue(value) })
+}
+fn ax_attribute_settable(element: AXUIElementRef, attribute: &CStr) -> bool {
+    let Ok(attribute) = cf_string_create(attribute) else {
+        return false;
+    };
+    let mut settable = false;
+    unsafe { AXUIElementIsAttributeSettable(element, attribute.0, &mut settable) == 0 && settable }
 }
 fn is_standard_ax_window(element: AXUIElementRef) -> bool {
     ax_string(element, c"AXSubrole").is_some_and(|subrole| subrole == "AXStandardWindow")

@@ -36,6 +36,15 @@ pub fn execute_action(action: &Action, manager: &dyn WindowManager) -> Result<()
             None,
             false,
         ),
+        Action::FocusNextAll | Action::FocusPreviousAll => focus_all_windows(
+            manager,
+            if matches!(action, Action::FocusNextAll) {
+                Direction::Next
+            } else {
+                Direction::Previous
+            },
+        ),
+        Action::ToggleZoom => toggle_zoom(manager),
         Action::Profile(name) => arrange_request(
             manager,
             None,
@@ -211,7 +220,13 @@ fn arrange_windows(
 ) -> Result<()> {
     let state = State::load()?;
     let all_windows = manager.visible_windows()?;
-    let mut windows = select_windows(all_windows, &selection, config, &state);
+    let selected = select_windows(all_windows, &selection, config, &state);
+    let mut windows = Vec::with_capacity(selected.len());
+    for window in selected {
+        if manager.can_set_bounds(&window)? {
+            windows.push(window);
+        }
+    }
     sort_windows(&mut windows, settings.sort);
 
     if windows.is_empty() {
@@ -221,19 +236,31 @@ fn arrange_windows(
 
     let monitors = manager.monitors()?;
     let plans = build_plan(&windows, &monitors, settings, slots)?;
-    for plan in plans {
-        if dry_run {
+    if dry_run {
+        for plan in plans {
             print_plan(plan.window, plan.monitor, plan.slot, plan.bounds);
-        } else {
-            manager
-                .set_bounds(plan.window, plan.bounds)
-                .with_context(|| {
-                    format!(
-                        "failed to move {} - {}",
-                        plan.window.process, plan.window.title
-                    )
-                })?;
         }
+        return Ok(());
+    }
+    move_plans(manager, plans)
+}
+
+fn move_plans(manager: &dyn WindowManager, plans: Vec<Plan<'_>>) -> Result<()> {
+    let mut failures = Vec::new();
+    for plan in plans {
+        if let Err(error) = manager.set_bounds(plan.window, plan.bounds) {
+            failures.push(format!(
+                "{} - {}: {error:#}",
+                plan.window.process, plan.window.title
+            ));
+        }
+    }
+    if !failures.is_empty() {
+        bail!(
+            "failed to move {} window(s); other windows were still arranged:\n  {}",
+            failures.len(),
+            failures.join("\n  ")
+        );
     }
     Ok(())
 }
@@ -406,6 +433,62 @@ fn change_float(manager: &dyn WindowManager, action: FloatAction, dry_run: bool)
     Ok(())
 }
 
+fn toggle_zoom(manager: &dyn WindowManager) -> Result<()> {
+    let focused = manager
+        .focused_window()?
+        .context("No focused window found.")?;
+    let mut state = State::load()?;
+    if state.contains(&focused.key) {
+        println!(
+            "{} - {} is floating; zoom was not changed.",
+            focused.process, focused.title
+        );
+        return Ok(());
+    }
+
+    if let Some(original) = state.zoomed_bounds(&focused.key) {
+        manager.set_bounds(&focused, original).with_context(|| {
+            format!("failed to restore {} - {}", focused.process, focused.title)
+        })?;
+        state.forget_zoom(&focused.key);
+        state.save()?;
+        println!("{} - {}: restored", focused.process, focused.title);
+        return Ok(());
+    }
+
+    if !manager.can_set_bounds(&focused)? {
+        bail!(
+            "{} - {} cannot be resized by the platform",
+            focused.process,
+            focused.title
+        );
+    }
+    let monitor = manager
+        .monitors()?
+        .into_iter()
+        .find(|monitor| monitor.id == focused.monitor_id)
+        .context("focused window monitor is no longer available")?;
+    let target = centered_zoom_bounds(monitor.work_area);
+    manager
+        .set_bounds(&focused, target)
+        .with_context(|| format!("failed to zoom {} - {}", focused.process, focused.title))?;
+    state.remember_zoom(focused.key, focused.bounds);
+    state.save()?;
+    println!("{} - {}: zoomed", focused.process, focused.title);
+    Ok(())
+}
+
+fn centered_zoom_bounds(area: Rect) -> Rect {
+    let width = (i64::from(area.width) * 7 / 10) as i32;
+    let height = (i64::from(area.height) * 7 / 10) as i32;
+    Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    }
+}
+
 fn change_ignore(command: IgnoreCommand, dry_run: bool) -> Result<()> {
     let mut config = Config::load()?;
     match command {
@@ -509,6 +592,39 @@ fn focus_window(
         })?;
     }
     print_focus(selected, dry_run);
+    Ok(())
+}
+
+fn focus_all_windows(manager: &dyn WindowManager, direction: Direction) -> Result<()> {
+    let mut windows = manager.visible_windows()?;
+    sort_windows(&mut windows, SortOrder::Title);
+    // Stable title ordering is the same ordering used by arrange within each
+    // monitor. Group monitors so navigation follows one arranged grid before
+    // moving to the next one.
+    windows.sort_by(|a, b| a.monitor_id.cmp(&b.monitor_id));
+    if windows.is_empty() {
+        bail!("No matching windows found.");
+    }
+
+    let focused = manager.focused_window()?;
+    let current = focused
+        .as_ref()
+        .and_then(|focused| windows.iter().position(|window| window.key == focused.key));
+    let index = match (direction, current) {
+        (Direction::Next, Some(index)) => (index + 1) % windows.len(),
+        (Direction::Previous, Some(0)) => windows.len() - 1,
+        (Direction::Previous, Some(index)) => index - 1,
+        (Direction::Next, None) => 0,
+        (Direction::Previous, None) => windows.len() - 1,
+    };
+    let selected = &windows[index];
+    manager.focus_window(selected).with_context(|| {
+        format!(
+            "failed to focus {} - {} (pid {}, window {})",
+            selected.process, selected.title, selected.key.pid, selected.key.id
+        )
+    })?;
+    print_focus(selected, false);
     Ok(())
 }
 
@@ -754,6 +870,8 @@ mod tests {
         windows: Vec<Window>,
         current: Option<Window>,
         focused: RefCell<Vec<WindowKey>>,
+        moved: RefCell<Vec<u32>>,
+        fail_move_pid: Option<u32>,
     }
 
     impl WindowManager for TestWindowManager {
@@ -774,7 +892,11 @@ mod tests {
             Ok(Vec::new())
         }
 
-        fn set_bounds(&self, _: &Window, _: Rect) -> Result<()> {
+        fn set_bounds(&self, window: &Window, _: Rect) -> Result<()> {
+            self.moved.borrow_mut().push(window.key.pid);
+            if self.fail_move_pid == Some(window.key.pid) {
+                bail!("simulated rejected resize");
+            }
             Ok(())
         }
     }
@@ -824,6 +946,56 @@ mod tests {
     }
 
     #[test]
+    fn moving_continues_after_one_window_rejects_its_bounds() {
+        let first = window("Popup", "Cannot resize", 1, "1");
+        let second = window("Editor", "Can resize", 2, "1");
+        let monitor = Monitor {
+            id: "1".into(),
+            work_area: Rect {
+                x: 0,
+                y: 0,
+                width: 1000,
+                height: 800,
+            },
+        };
+        let manager = TestWindowManager {
+            windows: vec![first.clone(), second.clone()],
+            current: None,
+            focused: RefCell::new(Vec::new()),
+            moved: RefCell::new(Vec::new()),
+            fail_move_pid: Some(first.key.pid),
+        };
+        let plans = vec![
+            Plan {
+                window: &first,
+                monitor: &monitor,
+                slot: 0,
+                bounds: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 500,
+                    height: 800,
+                },
+            },
+            Plan {
+                window: &second,
+                monitor: &monitor,
+                slot: 1,
+                bounds: Rect {
+                    x: 500,
+                    y: 0,
+                    width: 500,
+                    height: 800,
+                },
+            },
+        ];
+
+        let error = move_plans(&manager, plans).unwrap_err().to_string();
+        assert!(error.contains("other windows were still arranged"));
+        assert_eq!(*manager.moved.borrow(), vec![1, 2]);
+    }
+
+    #[test]
     fn focus_uses_pid_and_dry_run_does_not_change_focus() {
         let manager = TestWindowManager {
             windows: vec![
@@ -832,6 +1004,8 @@ mod tests {
             ],
             current: None,
             focused: RefCell::new(Vec::new()),
+            moved: RefCell::new(Vec::new()),
+            fail_move_pid: None,
         };
 
         let args = || FocusArgs {
@@ -863,6 +1037,8 @@ mod tests {
             ],
             current: None,
             focused: RefCell::new(Vec::new()),
+            moved: RefCell::new(Vec::new()),
+            fail_move_pid: None,
         };
         focus_window(
             &manager,
@@ -888,6 +1064,8 @@ mod tests {
             windows: vec![server, client_02.clone(), client_01.clone()],
             current: Some(client_02),
             focused: RefCell::new(Vec::new()),
+            moved: RefCell::new(Vec::new()),
+            fail_move_pid: None,
         };
         let mut windows = manager.visible_windows().unwrap();
         sort_windows(&mut windows, SortOrder::Title);
@@ -900,6 +1078,47 @@ mod tests {
     }
 
     #[test]
+    fn all_window_navigation_crosses_processes_and_wraps_across_monitors() {
+        let first = window("Alpha", "One", 1, "1");
+        let second = window("Beta", "Two", 2, "1");
+        let third = window("Gamma", "Three", 3, "2");
+        let manager = TestWindowManager {
+            windows: vec![third.clone(), second.clone(), first.clone()],
+            current: Some(first),
+            focused: RefCell::new(Vec::new()),
+            moved: RefCell::new(Vec::new()),
+            fail_move_pid: None,
+        };
+
+        focus_all_windows(&manager, Direction::Next).unwrap();
+        assert_eq!(manager.focused.borrow().last().unwrap().pid, second.key.pid);
+        focus_all_windows(&manager, Direction::Previous).unwrap();
+        assert_eq!(manager.focused.borrow().last().unwrap().pid, third.key.pid);
+    }
+
+    #[test]
+    fn zoom_uses_about_half_the_monitor_area_and_is_centered() {
+        let area = Rect {
+            x: 100,
+            y: -200,
+            width: 1000,
+            height: 800,
+        };
+        let zoomed = centered_zoom_bounds(area);
+        assert_eq!(
+            zoomed,
+            Rect {
+                x: 250,
+                y: -80,
+                width: 700,
+                height: 560,
+            }
+        );
+        assert_eq!(zoomed.area(), 392_000);
+        assert_eq!(area.area(), 800_000);
+    }
+
+    #[test]
     fn explicit_process_navigation_starts_at_an_end_when_focus_is_elsewhere() {
         let manager = TestWindowManager {
             windows: vec![
@@ -908,6 +1127,8 @@ mod tests {
             ],
             current: Some(window("Rider", "Project", 3, "1")),
             focused: RefCell::new(Vec::new()),
+            moved: RefCell::new(Vec::new()),
+            fail_move_pid: None,
         };
         let mut windows = manager.visible_windows().unwrap();
         sort_windows(&mut windows, SortOrder::Title);

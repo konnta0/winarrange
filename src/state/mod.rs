@@ -5,13 +5,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     config::{data_root, write_json},
-    model::WindowKey,
+    model::{Rect, WindowKey},
 };
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct State {
     #[serde(default)]
     pub floating: Vec<WindowKey>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub zoomed: Vec<ZoomedWindow>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZoomedWindow {
+    pub key: WindowKey,
+    pub original_bounds: Rect,
 }
 
 impl State {
@@ -47,6 +55,25 @@ impl State {
         self.floating.retain(|candidate| candidate != key);
         before != self.floating.len()
     }
+
+    pub fn zoomed_bounds(&self, key: &WindowKey) -> Option<Rect> {
+        self.zoomed
+            .iter()
+            .find(|entry| &entry.key == key)
+            .map(|entry| entry.original_bounds)
+    }
+
+    pub fn remember_zoom(&mut self, key: WindowKey, original_bounds: Rect) {
+        self.zoomed.retain(|entry| entry.key != key);
+        self.zoomed.push(ZoomedWindow {
+            key,
+            original_bounds,
+        });
+    }
+
+    pub fn forget_zoom(&mut self, key: &WindowKey) {
+        self.zoomed.retain(|entry| &entry.key != key);
+    }
 }
 
 fn state_path() -> Result<PathBuf> {
@@ -75,5 +102,24 @@ mod tests {
         assert!(!state.contains(&restarted));
         assert!(state.remove(&first));
         assert!(!state.contains(&first));
+    }
+
+    #[test]
+    fn zoom_state_remembers_and_forgets_original_bounds() {
+        let key = WindowKey {
+            pid: 100,
+            id: "abc".into(),
+        };
+        let bounds = Rect {
+            x: 10,
+            y: 20,
+            width: 300,
+            height: 200,
+        };
+        let mut state = State::default();
+        state.remember_zoom(key.clone(), bounds);
+        assert_eq!(state.zoomed_bounds(&key), Some(bounds));
+        state.forget_zoom(&key);
+        assert_eq!(state.zoomed_bounds(&key), None);
     }
 }

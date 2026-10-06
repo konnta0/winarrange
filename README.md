@@ -250,7 +250,7 @@ value = "Calculator"
 
 [[hotkey]]
 keys = "cmd+shift+a"
-action = "arrange-focused"
+action = "arrange"
 ```
 
 Run a profile with an unambiguous subcommand:
@@ -286,7 +286,7 @@ Global hotkeys are opt-in. Add only the bindings you want to `config.toml`:
 # macOS example
 [[hotkey]]
 keys = "cmd+shift+a"
-action = "arrange-focused"
+action = "arrange"
 
 [[hotkey]]
 keys = "cmd+shift+space"
@@ -294,17 +294,29 @@ action = "toggle-float"
 
 [[hotkey]]
 keys = "cmd+shift+j"
-action = "focus-next"
+action = "focus-next-all"
 
 [[hotkey]]
 keys = "cmd+shift+k"
-action = "focus-prev"
+action = "focus-prev-all"
+
+[[hotkey]]
+keys = "cmd+shift+enter"
+action = "toggle-zoom"
 
 [[hotkey]]
 keys = "cmd+shift+u"
 action = "profile"
 profile = "unity"
 ```
+
+Use `action = "arrange-focused"` instead when the shortcut should arrange
+only windows belonging to the currently focused application.
+
+`focus-next-all` and `focus-prev-all` navigate every detected window across
+applications and include floating and ignored windows. `toggle-zoom` centers a
+non-floating focused window at roughly half the monitor area; invoking it again
+restores the original bounds.
 
 On Windows use `win` in place of `cmd`, for example
 `win+shift+a`. `cmd`, `win`, `ctrl`, `alt`/`option`, and `shift` are
@@ -401,6 +413,8 @@ Diagnostic commands never move or resize windows.
 - Windows are never moved to a different monitor.
 - Titles provide stable ordering; process ID and native window ID break ties.
 - A compact grid is selected automatically unless `columns` is specified.
+- Incomplete final rows keep the same cell width and leave trailing grid cells
+  empty instead of stretching windows.
 - `gap` applies between windows and `margin` applies around each monitor's work
   area.
 - Applications that enforce a large minimum size are clamped back inside their

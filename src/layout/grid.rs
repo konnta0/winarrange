@@ -98,19 +98,21 @@ pub fn arrange_with_options(
         .map(|index| {
             let row = index / columns;
             let column = index % columns;
-            let items_in_row = columns.min(count - row * columns);
-            let horizontal_gap = i64::from(options.gap) * items_in_row.saturating_sub(1) as i64;
+            // Keep every row on the same column grid. An incomplete final row
+            // leaves its trailing cells empty instead of stretching its
+            // windows across the remaining width.
+            let horizontal_gap = i64::from(options.gap) * columns.saturating_sub(1) as i64;
             let usable_width = i64::from(inner.width) - horizontal_gap;
-            if usable_width < items_in_row as i64 {
+            if usable_width < columns as i64 {
                 return Err(LayoutError("gap leaves no usable window width".into()));
             }
 
             let x0 = i64::from(inner.x)
                 + i64::from(options.gap) * column as i64
-                + usable_width * column as i64 / items_in_row as i64;
+                + usable_width * column as i64 / columns as i64;
             let x1 = i64::from(inner.x)
                 + i64::from(options.gap) * column as i64
-                + usable_width * (column + 1) as i64 / items_in_row as i64;
+                + usable_width * (column + 1) as i64 / columns as i64;
             let y0 = i64::from(inner.y)
                 + i64::from(options.gap) * row as i64
                 + usable_height * row as i64 / rows as i64;
@@ -187,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn short_last_row_uses_full_width() {
+    fn short_last_row_keeps_uniform_cells_and_leaves_trailing_space() {
         let area = Rect {
             x: 10,
             y: 20,
@@ -196,11 +198,11 @@ mod tests {
         };
         let cells = arrange(3, area);
         assert_eq!(cells[2].x, area.x);
-        assert_eq!(cells[2].width, area.width);
+        assert_eq!(cells[2].width, 600);
 
         let cells = arrange(5, area);
-        assert_eq!(cells[3].width, 600);
-        assert_eq!(cells[4].x, 610);
+        assert_eq!(cells[3].width, 400);
+        assert_eq!(cells[4].x, 410);
     }
 
     #[test]
